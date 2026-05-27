@@ -25,7 +25,14 @@ var errNotFound = errors.New("not found")
 func main() {
 	provider := strings.ToLower(os.Getenv("STORAGE_PROVIDER"))
 	if provider == "" {
-		provider = "azure"
+		switch {
+		case os.Getenv("GCS_BUCKET") != "":
+			provider = "gcp"
+		case os.Getenv("AZURE_STORAGE_ACCOUNT") != "":
+			provider = "azure"
+		default:
+			log.Fatal("set STORAGE_PROVIDER=azure|gcp, or provide AZURE_STORAGE_ACCOUNT / GCS_BUCKET")
+		}
 	}
 
 	ctx := context.Background()
