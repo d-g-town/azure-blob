@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-notes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-notes
+  template:
+    metadata:
+      labels:
+        app: cloud-notes
+    spec:
+      serviceAccountName: cloud-notes
+      containers:
+        - name: app
+          image: YOUR_REGION-docker.pkg.dev/YOUR_PROJECT/YOUR_REPO/cloud-notes:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: STORAGE_PROVIDER
+              value: gcp
+            - name: GCS_BUCKET
+              value: YOUR_GCS_BUCKET
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-notes
+spec:
+  selector:
+    app: cloud-notes
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# Requires GKE Workload Identity enabled on the cluster + node pool, and:
+#   gcloud iam service-accounts add-iam-policy-binding \
+#     YOUR_GSA@YOUR_PROJECT.iam.gserviceaccount.com \
+#     --role=roles/iam.workloadIdentityUser \
+#     --member="serviceAccount:YOUR_PROJECT.svc.id.goog[default/cloud-notes]"
+# The GSA needs roles/storage.objectAdmin on the bucket (or finer-grained perms).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-notes
+  annotations:
+    iam.gke.io/gcp-service-account: YOUR_GSA@YOUR_PROJECT.iam.gserviceaccount.com

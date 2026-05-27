@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,48 +12,45 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"cloud.google.com/go/storage"
 )
 
-var client *azblob.Client
+type Store interface {
+	Get(ctx context.Context) (io.ReadCloser, error)
+	Put(ctx context.Context, data []byte) error
+}
+
+var errNotFound = errors.New("not found")
 
 func main() {
-	storageAccount := os.Getenv("AZURE_STORAGE_ACCOUNT")
-	if storageAccount == "" {
-		log.Fatal("AZURE_STORAGE_ACCOUNT environment variable is required")
-	}
-	containerName := os.Getenv("AZURE_CONTAINER_NAME")
-	if containerName == "" {
-		containerName = "notes"
-	}
-	blobName := os.Getenv("AZURE_BLOB_NAME")
-	if blobName == "" {
-		blobName = "note.txt"
-	}
-
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		log.Fatalf("failed to create credential: %v", err)
-	}
-
-	serviceURL := fmt.Sprintf("https://%s.blob.core.windows.net/", storageAccount)
-	client, err = azblob.NewClient(serviceURL, cred, nil)
-	if err != nil {
-		log.Fatalf("failed to create blob client: %v", err)
+	provider := strings.ToLower(os.Getenv("STORAGE_PROVIDER"))
+	if provider == "" {
+		provider = "azure"
 	}
 
 	ctx := context.Background()
-	_, err = client.CreateContainer(ctx, containerName, nil)
-	if err != nil && !strings.Contains(err.Error(), "ContainerAlreadyExists") {
-		log.Printf("warning: could not ensure container exists: %v", err)
+
+	var store Store
+	var err error
+	switch provider {
+	case "azure":
+		store, err = newAzureStore(ctx)
+	case "gcp", "gcs":
+		store, err = newGCSStore(ctx)
+	default:
+		log.Fatalf("unsupported STORAGE_PROVIDER %q (expected azure or gcp)", provider)
+	}
+	if err != nil {
+		log.Fatalf("failed to init %s store: %v", provider, err)
 	}
 
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/api/note", func(w http.ResponseWriter, r *http.Request) {
-		handleNote(w, r, containerName, blobName)
+		handleNote(w, r, store)
 	})
 
 	addr := ":8080"
-	log.Printf("listening on %s", addr)
+	log.Printf("listening on %s (provider=%s)", addr, provider)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
@@ -61,23 +59,23 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, indexHTML)
 }
 
-func handleNote(w http.ResponseWriter, r *http.Request, container, blob string) {
+func handleNote(w http.ResponseWriter, r *http.Request, store Store) {
 	ctx := r.Context()
 
 	switch r.Method {
 	case http.MethodGet:
-		resp, err := client.DownloadStream(ctx, container, blob, nil)
+		rc, err := store.Get(ctx)
 		if err != nil {
-			if strings.Contains(err.Error(), "BlobNotFound") {
+			if errors.Is(err, errNotFound) {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		defer resp.Body.Close()
+		defer rc.Close()
 		w.Header().Set("Content-Type", "text/plain")
-		io.Copy(w, resp.Body)
+		io.Copy(w, rc)
 
 	case http.MethodPut:
 		body, err := io.ReadAll(r.Body)
@@ -85,8 +83,7 @@ func handleNote(w http.ResponseWriter, r *http.Request, container, blob string) 
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, err = client.UploadBuffer(ctx, container, blob, body, nil)
-		if err != nil {
+		if err := store.Put(ctx, body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -97,12 +94,101 @@ func handleNote(w http.ResponseWriter, r *http.Request, container, blob string) 
 	}
 }
 
+type azureStore struct {
+	client    *azblob.Client
+	container string
+	blob      string
+}
+
+func newAzureStore(ctx context.Context) (*azureStore, error) {
+	account := os.Getenv("AZURE_STORAGE_ACCOUNT")
+	if account == "" {
+		return nil, errors.New("AZURE_STORAGE_ACCOUNT is required")
+	}
+	container := envOr("AZURE_CONTAINER_NAME", "notes")
+	blob := envOr("AZURE_BLOB_NAME", "note.txt")
+
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create credential: %w", err)
+	}
+	client, err := azblob.NewClient(fmt.Sprintf("https://%s.blob.core.windows.net/", account), cred, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create blob client: %w", err)
+	}
+	if _, err := client.CreateContainer(ctx, container, nil); err != nil && !strings.Contains(err.Error(), "ContainerAlreadyExists") {
+		log.Printf("warning: could not ensure container exists: %v", err)
+	}
+	return &azureStore{client: client, container: container, blob: blob}, nil
+}
+
+func (s *azureStore) Get(ctx context.Context) (io.ReadCloser, error) {
+	resp, err := s.client.DownloadStream(ctx, s.container, s.blob, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "BlobNotFound") {
+			return nil, errNotFound
+		}
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+func (s *azureStore) Put(ctx context.Context, data []byte) error {
+	_, err := s.client.UploadBuffer(ctx, s.container, s.blob, data, nil)
+	return err
+}
+
+type gcsStore struct {
+	obj *storage.ObjectHandle
+}
+
+func newGCSStore(ctx context.Context) (*gcsStore, error) {
+	bucket := os.Getenv("GCS_BUCKET")
+	if bucket == "" {
+		return nil, errors.New("GCS_BUCKET is required")
+	}
+	object := envOr("GCS_OBJECT_NAME", "note.txt")
+
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create storage client: %w", err)
+	}
+	return &gcsStore{obj: client.Bucket(bucket).Object(object)}, nil
+}
+
+func (s *gcsStore) Get(ctx context.Context) (io.ReadCloser, error) {
+	rc, err := s.obj.NewReader(ctx)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, errNotFound
+		}
+		return nil, err
+	}
+	return rc, nil
+}
+
+func (s *gcsStore) Put(ctx context.Context, data []byte) error {
+	w := s.obj.NewWriter(ctx)
+	if _, err := w.Write(data); err != nil {
+		w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 const indexHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Azure Blob Notes</title>
+<title>Cloud Notes</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
@@ -112,7 +198,7 @@ const indexHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <h1>Azure Blob Notes</h1>
+  <h1>Cloud Notes</h1>
   <textarea id="editor" placeholder="Type here..."></textarea>
   <div id="status">Loading...</div>
   <script>
