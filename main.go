@@ -198,16 +198,88 @@ const indexHTML = `<!DOCTYPE html>
 <title>Cloud Notes</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
-  h1 { margin-bottom: 16px; font-size: 1.4rem; }
-  textarea { width: 100%; height: 300px; padding: 12px; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; resize: vertical; }
-  #status { margin-top: 8px; font-size: 0.85rem; color: #666; }
+  :root {
+    --bg: #0f172a;
+    --bg-grad: radial-gradient(circle at 20% 0%, #1e293b 0%, #0f172a 55%);
+    --card: rgba(255, 255, 255, 0.04);
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #818cf8;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg-grad);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 64px 16px;
+    display: flex;
+    justify-content: center;
+  }
+  main { width: 100%; max-width: 680px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; }
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #fff, #c7d2fe);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 8px;
+    box-shadow: 0 0 12px var(--accent);
+    vertical-align: middle;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 6px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.5);
+  }
+  textarea {
+    width: 100%;
+    height: 360px;
+    padding: 18px;
+    font-size: 1rem;
+    line-height: 1.6;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    resize: vertical;
+    outline: none;
+  }
+  textarea::placeholder { color: var(--muted); }
+  #status {
+    margin-top: 14px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 </style>
 </head>
 <body>
-  <h1>Cloud Notes</h1>
-  <textarea id="editor" placeholder="Type here..."></textarea>
-  <div id="status">Loading...</div>
+  <main>
+    <header>
+      <h1><span class="dot"></span>Cloud Notes</h1>
+    </header>
+    <div class="card">
+      <textarea id="editor" placeholder="Start typing — your notes save automatically..."></textarea>
+    </div>
+    <div id="status">Loading...</div>
+  </main>
   <script>
     const editor = document.getElementById('editor');
     const status = document.getElementById('status');
